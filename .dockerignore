@@ -1,0 +1,10 @@
+.git
+**/node_modules
+**/.venv
+**/dist
+**/__pycache__
+**/.pytest_cache
+**/.e2e-run
+**/*.db
+**/*.db-wal
+**/*.db-shm

@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Node
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Local runtime artifacts
+*.db
+*.db-wal
+*.db-shm
+.e2e-run/
+data/
+.DS_Store

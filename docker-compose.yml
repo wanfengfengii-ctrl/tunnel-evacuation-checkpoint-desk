@@ -1,0 +1,32 @@
+# 默认只运行 web 与 api 两个长驻服务；verify 是一次性验收服务：
+#   docker compose run --rm verify
+#
+# 宿主端口可覆盖：
+#   WEB_PORT=8080 API_PORT=9000 docker compose up --build
+services:
+  api:
+    build: ./backend
+    environment:
+      DRILL_DB_PATH: /data/drill.db
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - drill-data:/data
+    restart: unless-stopped
+
+  web:
+    build: ./frontend
+    ports:
+      - "${WEB_PORT:-5173}:80"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  verify:
+    build:
+      context: .
+      dockerfile: Dockerfile.verify
+    profiles: ["verify"]
+
+volumes:
+  drill-data:
