@@ -42,6 +42,54 @@ h1 {
   color: #1b5e20;
 }
 
+.timer {
+  border: 1px solid #d6dde5;
+  border-radius: 8px;
+  background: #f7fafc;
+  padding: 10px 16px;
+  margin: 16px 0;
+}
+
+.timer-row {
+  margin: 6px 0;
+  font-size: 15px;
+}
+
+.timer-over {
+  color: #b71c1c;
+  font-weight: 600;
+}
+
+.duration-field {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 16px;
+  font-size: 15px;
+}
+
+.duration-field input {
+  width: 96px;
+  padding: 8px 10px;
+  border: 1px solid #9fb3c8;
+  border-radius: 8px;
+  font-size: 15px;
+  color: #1f2933;
+  background: #fff;
+}
+
+.duration-range {
+  color: #52606d;
+  font-size: 13px;
+}
+
+.duration-hint {
+  flex-basis: 100%;
+  color: #b71c1c;
+  font-size: 13px;
+}
+
 .steps {
   list-style: none;
   padding: 0;

@@ -31,16 +31,44 @@ describe("api client", () => {
           node: "cross_passage_open",
           version: 1,
           steps: ["cross_passage_open", "upstream_seal", "headcount"],
+          planned_minutes: 30,
+          started_at: "2026-09-15T10:00:00+00:00",
+          planned_end_at: "2026-09-15T10:30:00+00:00",
         }),
       );
     vi.stubGlobal("fetch", fetchMock);
 
     const drill = await api.startDrill();
     expect(drill.version).toBe(1);
+    expect(drill.planned_minutes).toBe(30);
+    // No argument means no request body at all (old client compatibility).
     expect(fetchMock).toHaveBeenCalledWith("/api/drills/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
     });
+  });
+
+  it("startDrill with a duration posts planned_minutes as JSON", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        jsonResponse(201, {
+          status: "in_progress",
+          node: "cross_passage_open",
+          version: 1,
+          steps: ["cross_passage_open", "upstream_seal", "headcount"],
+          planned_minutes: 45,
+          started_at: "2026-09-15T10:00:00+00:00",
+          planned_end_at: "2026-09-15T10:45:00+00:00",
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const drill = await api.startDrill(45);
+    expect(drill.planned_minutes).toBe(45);
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body)).toEqual({ planned_minutes: 45 });
   });
 
   it("confirm submits exactly the seen node and version", async () => {

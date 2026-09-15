@@ -137,12 +137,16 @@ def test_state_survives_restart_after_every_confirmation(api):
     api.stop()
     api.start()
     final = httpx.get(f"{base}/api/drills", timeout=5).json()
-    assert final == {
+    assert {k: final[k] for k in ("status", "node", "version", "steps")} == {
         "status": "completed",
         "node": "headcount",
         "version": 4,
         "steps": ["cross_passage_open", "upstream_seal", "headcount"],
     }
+    # Timing basis survives the restart unchanged as well.
+    assert final["planned_minutes"] == 30
+    assert final["started_at"] == response.json()["started_at"]
+    assert final["planned_end_at"] == response.json()["planned_end_at"]
 
     # A restart cannot be used to complete a second time; the stale final
     # click is rejected with the actual state.

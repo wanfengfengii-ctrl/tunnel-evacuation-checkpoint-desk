@@ -8,6 +8,12 @@ export interface DrillState {
   version: number;
   /** Fixed confirmation order. */
   steps: string[];
+  /** Operator estimate accepted by the server, in minutes (5..180). */
+  planned_minutes: number;
+  /** Server-side UTC start instant (ISO-8601). */
+  started_at: string;
+  /** Server-computed UTC end instant = started_at + planned_minutes. */
+  planned_end_at: string;
 }
 
 export interface ConfirmPayload {
@@ -33,3 +39,7 @@ export const NODE_LABELS: Record<string, string> = {
 export function nodeLabel(node: string): string {
   return NODE_LABELS[node] ?? node;
 }
+
+export const MIN_PLANNED_MINUTES = 5;
+export const MAX_PLANNED_MINUTES = 180;
+export const DEFAULT_PLANNED_MINUTES = 30;

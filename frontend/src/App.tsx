@@ -1,13 +1,26 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "./api";
+import Timer from "./Timer";
 import type { DrillState } from "./types";
-import { nodeLabel } from "./types";
+import {
+  DEFAULT_PLANNED_MINUTES,
+  MAX_PLANNED_MINUTES,
+  MIN_PLANNED_MINUTES,
+  nodeLabel,
+} from "./types";
 
-export default function App() {
+interface AppProps {
+  /** Clock injection for tests; defaults to the real wall clock. */
+  now?: () => number;
+}
+
+export default function App({ now }: AppProps) {
   // undefined = initial load in flight, null = no drill exists.
   const [drill, setDrill] = useState<DrillState | null | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Commander's estimate, captured before start; default 30 mirrors the server.
+  const [plannedInput, setPlannedInput] = useState(String(DEFAULT_PLANNED_MINUTES));
 
   const refresh = useCallback(async () => {
     const state = await api.getDrill();
@@ -19,6 +32,18 @@ export default function App() {
       setError(err instanceof Error ? err.message : String(err)),
     );
   }, [refresh]);
+
+  /** Validate the range in the page before starting; the server enforces the
+   * same range, but a clear local message avoids a pointless request. */
+  const plannedMinutes = Number(plannedInput);
+  const durationInvalid =
+    plannedInput.trim() === "" ||
+    !Number.isInteger(plannedMinutes) ||
+    plannedMinutes < MIN_PLANNED_MINUTES ||
+    plannedMinutes > MAX_PLANNED_MINUTES;
+  const durationHint = durationInvalid
+    ? `预计用时需为 ${MIN_PLANNED_MINUTES} 至 ${MAX_PLANNED_MINUTES} 分钟之间的整数。`
+    : null;
 
   /** After a conflict: surface the server message, then re-render server
    * state so a late/stale request can never leave the page ahead of truth. */
@@ -36,10 +61,13 @@ export default function App() {
   );
 
   const start = useCallback(async () => {
+    // The button is disabled while the value is outside the server range, so
+    // whatever reaches here is an integer within 5..180.
+    if (durationInvalid) return;
     setBusy(true);
     setError(null);
     try {
-      setDrill(await api.startDrill());
+      setDrill(await api.startDrill(plannedMinutes));
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
         await handleConflict(err);
@@ -49,7 +77,7 @@ export default function App() {
     } finally {
       setBusy(false);
     }
-  }, [handleConflict]);
+  }, [durationInvalid, plannedMinutes, handleConflict]);
 
   const confirm = useCallback(async () => {
     if (!drill) return;
@@ -147,6 +175,10 @@ export default function App() {
         )}
       </section>
 
+      {drill !== null && (
+        <Timer startedAt={drill.started_at} plannedEndAt={drill.planned_end_at} now={now} />
+      )}
+
       <ol className="steps">
         {(drill?.steps ?? ["cross_passage_open", "upstream_seal", "headcount"]).map(
           (step, index) => {
@@ -175,12 +207,37 @@ export default function App() {
         )}
       </ol>
 
+      {drill === null && (
+        <div className="duration-field">
+          <label htmlFor="planned-minutes">预计用时（分钟）：</label>
+          <input
+            id="planned-minutes"
+            data-testid="planned-minutes"
+            type="number"
+            inputMode="numeric"
+            min={MIN_PLANNED_MINUTES}
+            max={MAX_PLANNED_MINUTES}
+            step={1}
+            value={plannedInput}
+            onChange={(event) => setPlannedInput(event.target.value)}
+          />
+          <span className="duration-range">
+            {MIN_PLANNED_MINUTES}–{MAX_PLANNED_MINUTES} 分钟，默认 {DEFAULT_PLANNED_MINUTES} 分钟
+          </span>
+          {durationHint !== null && (
+            <span className="duration-hint" role="alert" data-testid="duration-hint">
+              {durationHint}
+            </span>
+          )}
+        </div>
+      )}
+
       <div className="actions">
         {drill === null && (
           <button
             type="button"
             onClick={start}
-            disabled={busy}
+            disabled={busy || durationInvalid}
             data-testid="start-button"
           >
             启动演练

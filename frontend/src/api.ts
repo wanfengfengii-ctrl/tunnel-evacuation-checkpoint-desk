@@ -57,8 +57,19 @@ export const api = {
     }
   },
 
-  startDrill(): Promise<DrillState> {
-    return request<DrillState>("/api/drills/start", { method: "POST" });
+  /** Starts the drill.
+   *
+   * Without an argument no body is sent at all, exactly like an old client
+   * (the server then applies its 30-minute default). With an argument the
+   * duration is posted as JSON and the server validates the 5..180 range. */
+  startDrill(plannedMinutes?: number): Promise<DrillState> {
+    if (plannedMinutes === undefined) {
+      return request<DrillState>("/api/drills/start", { method: "POST" });
+    }
+    return request<DrillState>("/api/drills/start", {
+      method: "POST",
+      body: JSON.stringify({ planned_minutes: plannedMinutes }),
+    });
   },
 
   confirm(payload: ConfirmPayload): Promise<DrillState> {

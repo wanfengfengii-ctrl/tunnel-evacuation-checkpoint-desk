@@ -37,6 +37,25 @@
 不可能让页面停留在“领先于服务器”的错误位置。SQLite 文件挂载在独立卷上，**即使 API 在
 任意一次成功确认后重启**，指挥员刷新后仍从唯一正确的下一节点继续。
 
+## 预计用时与节奏提示
+
+指挥员启动演练时可填写**预计用时**（整数，`5`–`180` 分钟，默认 `30` 分钟）。启动后：
+
+- 服务端以**自己的 UTC 时钟**在写入事务中记录启动时刻 `started_at`，并计算
+  `planned_end_at = started_at + planned_minutes`；
+- 查询演练始终返回 `started_at` / `planned_minutes` / `planned_end_at`（均为 UTC ISO-8601）；
+- 指挥页面持续显示**已用时间**、**剩余时间**，超过预计结束时刻后切换为
+  **“已超出预计”**（如 `已超出预计 01:23`，超过一小时会带小时位）；预计结束时刻按浏览器本地时区展示；
+- 计时完全由服务端返回的结束时刻驱动，页面每秒仅做本地计算，**不产生额外 API 请求**；
+  刷新页面后按同一结束时刻继续，计时器卸载即清理；
+- 三项确认的固定顺序、节点/版本语义与超时与否**完全无关**，超时后仍可正常完成确认。
+
+旧客户端 POST 启动请求时不带请求体（或传空对象 / `null`），服务端按 **30 分钟**处理。
+旧数据库无需删库重建：初始化会对已有的单行表做**可重复执行**的字段迁移；旧行缺少时间
+数据时，在**首次读取/确认**中以当时服务端时间为基准一次性补齐 30 分钟计划（并发首读由
+写事务保证只写入一个一致基准）。非法时长（超出 5–180、非整数等）返回 **422 且不创建
+演练**；页面在启动前也会做同样的范围校验并给出提示。
+
 ## 启动方式（Docker Compose）
 
 需要 Docker 与 Compose 插件。默认在宿主暴露 `http://localhost:5173`（页面）与
@@ -97,16 +116,30 @@ npm run dev          # Vite dev server 把同源 /api 代理到 http://127.0.0.1
 | 方法 | 路径 | 说明 |
 | ---- | ---- | ---- |
 | GET  | `/api/health` | 健康检查 |
-| GET  | `/api/drills` | 查询唯一演练；不存在返回 404 |
-| POST | `/api/drills/start` | 仅在无演练时创建固定顺序、版本 1；已存在返回 409 |
+| GET  | `/api/drills` | 查询唯一演练；不存在返回 404；返回 `started_at`、`planned_minutes`、`planned_end_at`（UTC） |
+| POST | `/api/drills/start` | 仅在无演练时创建固定顺序、版本 1；请求体可空，可选 `{"planned_minutes": N}`（5–180，缺省 30）；超范围返回 422 且不建演练；已存在返回 409 |
 | POST | `/api/drills/confirm` | 提交 `{"node": "...", "version": N}`，单事务比对推进 |
 
 成功与冲突响应示例：
 
 ```jsonc
+// POST /api/drills/start {"planned_minutes":45}  → 201
+// （旧客户端不带请求体同样兼容，此时 planned_minutes 为 30）
+{ "status": "in_progress", "node": "cross_passage_open", "version": 1,
+  "steps": ["cross_passage_open", "upstream_seal", "headcount"],
+  "planned_minutes": 45,
+  "started_at": "2026-09-15T10:00:00+00:00",
+  "planned_end_at": "2026-09-15T10:45:00+00:00" }
+
 // POST /api/drills/confirm {"node":"cross_passage_open","version":1}  → 200
 { "status": "in_progress", "node": "upstream_seal", "version": 2,
-  "steps": ["cross_passage_open", "upstream_seal", "headcount"] }
+  "steps": ["cross_passage_open", "upstream_seal", "headcount"],
+  "planned_minutes": 45,
+  "started_at": "2026-09-15T10:00:00+00:00",
+  "planned_end_at": "2026-09-15T10:45:00+00:00" }
+
+// POST /api/drills/start {"planned_minutes":181}  → 422（不创建演练）
+{ "detail": "预计用时需在 5 至 180 分钟之间，收到 181。" }
 
 // 旧按钮请求晚到 → 409（带回服务器实际状态，且状态不变）
 { "error": "old_version", "detail": "提交的是旧版本 1，服务器当前版本为 2。",
@@ -134,18 +167,20 @@ PYTHON_BIN=/path/to/venv/bin/python E2E_API_PORT=18000 E2E_WEB_PORT=14173 \
 ```
 
 Playwright 覆盖：固定顺序与首节点 v1、旧请求晚到的 409 与页面刷新、成功确认后重启仍在
-正确节点、最终节点双发竞态只完成一次且重启后仍只有一次完成结果。
+正确节点、最终节点双发竞态只完成一次且重启后仍只有一次完成结果；预计用时覆盖默认 30 分钟、
+指定时长（45 分钟）写入与查询且刷新后按同一结束时刻继续、非法时长启动前拦截且服务端无演练、
+以及注入可控时钟后页面从“剩余时间”切换为“已超出预计”并仍能完成全部三步确认。
 
 ## 目录结构
 
 ```
 .
 ├── backend/            FastAPI 应用、SQLite 访问层、pytest
-│   ├── app/main.py     状态机与单事务 compare-and-set
-│   ├── app/database.py 单表单行 drill(id=1)
+│   ├── app/main.py     状态机与单事务 compare-and-set、预计用时与 UTC 时间基准
+│   ├── app/database.py 单表单行 drill(id=1)，可重复执行的字段迁移
 │   └── tests/
 ├── frontend/           React + TS + Vite、Vitest、Playwright
-│   ├── src/            api.ts（真实 /api 调用）、App.tsx、types.ts
+│   ├── src/            api.ts（真实 /api 调用）、App.tsx、Timer.tsx、types.ts
 │   └── tests/{unit,e2e}/
 ├── docker-compose.yml  仅 web、api 长驻 + verify 一次性服务
 ├── Dockerfile.verify   verify 服务镜像（Playwright 官方镜像 + Python venv）

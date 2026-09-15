@@ -1,4 +1,21 @@
 import threading
+from datetime import datetime, timedelta, timezone
+
+
+def _parse_utc(value: str) -> datetime:
+    # Accept the trailing "Z" too; the server currently emits an explicit +00:00.
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(
+        timezone.utc
+    )
+
+
+def assert_default_plan(state: dict) -> None:
+    """A legacy-style start (no body) always yields a 30-minute plan."""
+    assert state["planned_minutes"] == 30
+    started_at = _parse_utc(state["started_at"])
+    planned_end_at = _parse_utc(state["planned_end_at"])
+    assert started_at.tzinfo is not None
+    assert planned_end_at - started_at == timedelta(minutes=30)
 
 
 def test_health(client):
@@ -15,12 +32,25 @@ def test_start_creates_fixed_order_with_version_1(client):
     response = client.post("/api/drills/start")
     assert response.status_code == 201
     state = response.json()
-    assert state == {
+    # Legacy client (no body) gets the 30-minute default with a UTC end time
+    # computed by the server.
+    assert {
+        k: state[k]
+        for k in ("status", "node", "version", "steps", "planned_minutes")
+    } == {
         "status": "in_progress",
         "node": "cross_passage_open",
         "version": 1,
         "steps": ["cross_passage_open", "upstream_seal", "headcount"],
+        "planned_minutes": 30,
     }
+    assert_default_plan(state)
+
+    # GET reports the exact same instants; timing is persisted, not recomputed.
+    fetched = client.get("/api/drills").json()
+    assert fetched["started_at"] == state["started_at"]
+    assert fetched["planned_end_at"] == state["planned_end_at"]
+    assert fetched["planned_minutes"] == 30
 
 
 def test_second_start_is_409_and_changes_nothing(started):

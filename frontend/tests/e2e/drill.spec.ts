@@ -164,3 +164,164 @@ test("最后一步双发重试竞态：只完成一次，迟到的请求 409，�
   expect(staleBody.error).toBe("drill_completed");
   expect(staleBody.version).toBe(4);
 });
+
+// ---------------------------------------------------------------------------
+// Planned duration
+// ---------------------------------------------------------------------------
+
+test("不填预计用时：默认 30 分钟，服务端返回启动与结束时刻", async ({ page }) => {
+  await page.goto("/");
+  await page.getByTestId("start-button").click();
+  await expect(page.getByTestId("timer")).toBeVisible();
+
+  const plan = await page.evaluate(async () => {
+    const res = await fetch("/api/drills");
+    return (await res.json()) as {
+      planned_minutes: number;
+      started_at: string;
+      planned_end_at: string;
+    };
+  });
+  expect(plan.planned_minutes).toBe(30);
+
+  // The end instant shown equals started_at + 30 minutes, rendered locally.
+  const expectedEndLocal = await page.evaluate((endAt) => {
+    return new Date(endAt).toLocaleString("zh-CN", { hour12: false });
+  }, plan.planned_end_at);
+  await expect(page.getByTestId("timer-end-at")).toHaveText(expectedEndLocal);
+  const diffMs = new Date(plan.planned_end_at).getTime()
+    - new Date(plan.started_at).getTime();
+  expect(diffMs).toBe(30 * 60_000);
+
+  // Immediately after start the remaining time is close to 30 minutes.
+  await expect(page.getByTestId("timer-remaining")).toContainText("29:");
+});
+
+test("指定预计用时贯穿写入与查询：45 分钟后刷新页面仍按同一时刻计时", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.getByTestId("planned-minutes").fill("45");
+  await page.getByTestId("start-button").click();
+  await expect(page.getByTestId("timer")).toBeVisible();
+
+  const plan = await page.evaluate(async () => {
+    const res = await fetch("/api/drills");
+    return (await res.json()) as {
+      planned_minutes: number;
+      started_at: string;
+      planned_end_at: string;
+    };
+  });
+  expect(plan.planned_minutes).toBe(45);
+  expect(
+    new Date(plan.planned_end_at).getTime()
+      - new Date(plan.started_at).getTime(),
+  ).toBe(45 * 60_000);
+
+  const endTextBefore = (await page.getByTestId("timer-end-at").textContent()) ?? "";
+
+  // Reload (as a field commander would): the same server end instant drives
+  // the countdown, and remaining time keeps counting down from ~44 minutes.
+  await page.reload();
+  await expect(page.getByTestId("timer-end-at")).toHaveText(endTextBefore.trim());
+  await expect(page.getByTestId("timer-remaining")).toContainText("44:");
+
+  // The persisted plan is what the API still reports after the reload.
+  const planAfterReload = await page.evaluate(async () => {
+    const res = await fetch("/api/drills");
+    return (await res.json()) as { planned_minutes: number };
+  });
+  expect(planAfterReload.planned_minutes).toBe(45);
+});
+
+test("启动前超出范围的预计用时给出提示且不发起启动请求", async ({ page }) => {
+  await page.goto("/");
+  const input = page.getByTestId("planned-minutes");
+  const startButton = page.getByTestId("start-button");
+
+  for (const value of ["4", "181", "0", "7.5"]) {
+    await input.fill(value);
+    await expect(page.getByTestId("duration-hint")).toBeVisible();
+    await expect(startButton).toBeDisabled();
+  }
+
+  await input.fill("180");
+  await expect(page.getByTestId("duration-hint")).toHaveCount(0);
+  await expect(startButton).toBeEnabled();
+
+  // None of the invalid attempts created a drill on the real server.
+  const probe = await page.evaluate(async () => {
+    const res = await fetch("/api/drills");
+    return res.status;
+  });
+  expect(probe).toBe(404);
+});
+
+/** Install a controllable clock before any page script runs: ``Date`` (and
+ * Date.now) is shifted by a mutable offset, while real setInterval keeps
+ * firing so the page's per-second tick re-renders with the faked time. */
+async function installControllableClock(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const RealDate = Date;
+    let offsetMs = 0;
+    (window as unknown as { __advanceClock: (ms: number) => void }).__advanceClock = (
+      ms,
+    ) => {
+      offsetMs += ms;
+    };
+    const FakeDate = class extends RealDate {
+      constructor(...args: unknown[]) {
+        if (args.length === 0) {
+          super(RealDate.now() + offsetMs);
+        } else {
+          // Forward native constructor arguments (e.g. an ISO string) untouched.
+          super(...(args as ConstructorParameters<typeof Date>));
+        }
+      }
+      static now(): number {
+        return RealDate.now() + offsetMs;
+      }
+    } as unknown as DateConstructor;
+    globalThis.Date = FakeDate;
+  });
+}
+
+test("可控时钟：剩余时间切换为已超出预计，且三步确认仍可依次完成", async ({
+  page,
+}) => {
+  await installControllableClock(page);
+
+  await page.goto("/");
+  await page.getByTestId("planned-minutes").fill("5");
+  await page.getByTestId("start-button").click();
+
+  await expect(page.getByTestId("timer-remaining")).toContainText("04:");
+  await expect(page.getByTestId("timer-overtime")).toHaveCount(0);
+
+  // Shift the browser clock 6 minutes beyond the real start instant. The
+  // server-provided planned end instant is unchanged; within one real second
+  // the page's own interval must flip to the overtime display.
+  await page.evaluate(() => {
+    (window as unknown as { __advanceClock: (ms: number) => void }).__advanceClock(
+      6 * 60_000,
+    );
+  });
+  await expect(page.getByTestId("timer-overtime")).toBeVisible();
+  await expect(page.getByTestId("timer-overtime")).toContainText("已超出预计");
+  await expect(page.getByTestId("timer-overtime")).toContainText("01:");
+  await expect(page.getByTestId("timer-remaining")).toHaveCount(0);
+
+  // Overtime changes nothing about the confirmation order: the field commander
+  // still completes all three steps in sequence.
+  await page.getByTestId("confirm-button").click();
+  await expect(page.getByTestId("current-node")).toHaveText(LABELS.upstream_seal);
+  await page.getByTestId("confirm-button").click();
+  await expect(page.getByTestId("current-node")).toHaveText(LABELS.headcount);
+  await page.getByTestId("confirm-button").click();
+
+  await expect(page.getByTestId("completed-banner")).toBeVisible();
+  await expect(page.getByTestId("confirm-button")).toHaveCount(0);
+  // Timer remains mounted and still reports the overtime state.
+  await expect(page.getByTestId("timer-overtime")).toContainText("已超出预计");
+});
